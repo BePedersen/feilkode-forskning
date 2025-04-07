@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <title>QR-koder Tabell – Moderne UI</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --gray: #f3f4f6;
+      --light: #ffffff;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      background: var(--gray);
+      color: #111827;
+      padding: 2rem;
+    }
+
+    h2 {
+      font-size: 1.75rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .btn, label[for="uploadInput"] {
+        background: #6b7280;
+        color: white;
+        height: 44px;
+        min-width: 160px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.375rem;
+        font-size: 1rem;
+        font-weight: 500;
+        padding: 0.6rem 1.25rem;
+        cursor: pointer;
+        }
+
+    .btn {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn:hover {
+      background: #1e40af;
+    }
+
+    label[for="uploadInput"] {
+      background: #6b7280;
+      color: white;
+    }
+
+    label[for="uploadInput"]:hover {
+      background: #4b5563;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--light);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+
+    th, td {
+      padding: 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    th {
+      background: #f9fafb;
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+
+    tr.expandable {
+      background: #eff6ff;
+      cursor: pointer;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .filter-input {
+      width: 100%;
+      padding: 0.5rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      font-size: 0.875rem;
+    }
+
+    td[contenteditable="true"] {
+      background-color: #fef3c7;
+    }
+
+    td.readonly {
+      background-color: #f9fafb;
+      color: #6b7280;
+    }
+
+    .edit-btn {
+      cursor: pointer;
+      color: var(--primary);
+      border: none;
+      background: none;
+      font-size: 1rem;
+      padding: 0;
+    }
+
+    #colorPicker {
+      position: absolute;
+      display: none;
+      z-index: 1000;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>📋 QR-koder Tabell</h2>
+  <div class="toolbar">
+    <button class="btn" id="downloadBtn">💾 Last ned CSV</button>
+    <label for="uploadInput">📤 Last opp CSV</label>
+    <input type="file" id="uploadInput" accept=".csv" />
+    <input type="color" id="colorPicker" />
+  </div>
+  <div id="tableContainer">Laster inn data...</div>
+
+  <script>
+    let allData = [];
+    let headers = [];
+    let filters = {};
+    let filterTimers = {};
+    let currentSort = { column: null, ascending: true };
+    let targetCell = null;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      fetch("qrkoder.csv")
+        .then(r => r.text())
+        .then(text => {
+          const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+          allData = parsed.data;
+          headers = parsed.meta.fields;
+          headers.forEach(h => filters[h] = '');
+          renderTable();
+        });
+
+      document.getElementById("downloadBtn").addEventListener("click", downloadCSV);
+      document.getElementById("uploadInput").addEventListener("change", handleCSVUpload);
+      document.body.addEventListener("click", (e) => {
+        if (!e.target.closest("#colorPicker")) {
+          document.getElementById("colorPicker").style.display = "none";
+        }
+      });
+      document.getElementById("colorPicker").addEventListener("input", () => {
+        if (targetCell) {
+          targetCell.style.backgroundColor = colorPicker.value;
+        }
+      });
+    });
+
+    function handleCSVUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const parsed = Papa.parse(event.target.result, { header: true, skipEmptyLines: true });
+        mergeData(parsed.data);
+        renderTable();
+      };
+      reader.readAsText(file);
+    }
+
+    function mergeData(newRows) {
+      const existingQR = new Set(allData.map(r => JSON.stringify(r)));
+      newRows.forEach(row => {
+        const stringified = JSON.stringify(row);
+        if (!existingQR.has(stringified)) {
+          allData.push(row);
+        }
+      });
+    }
+
+    function parseDate(str) {
+      const d = new Date(str);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    function getClosestToToday(rows) {
+      const today = new Date();
+      let best = null, bestDiff = Infinity;
+      rows.forEach(r => {
+        const d = parseDate(r.row["Repair Datetime"]);
+        if (d) {
+          const diff = Math.abs(today - d);
+          if (diff < bestDiff) {
+            best = r;
+            bestDiff = diff;
+          }
+        }
+      });
+      return best || rows[0];
+    }
+
+    function matchesFilters(row) {
+      return headers.every(h => (row[h] || "").toLowerCase().includes((filters[h] || "").toLowerCase()));
+    }
+
+    function renderTable() {
+      const grouped = {};
+      allData.forEach((row, i) => {
+        const qr = row["qrcode"];
+        if (!grouped[qr]) grouped[qr] = [];
+        grouped[qr].push({ index: i, row });
+      });
+
+      const container = document.getElementById("tableContainer");
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const tbody = document.createElement("tbody");
+
+      const headerRow = document.createElement("tr");
+      const editTh = document.createElement("th");
+      editTh.textContent = "✏️";
+      headerRow.appendChild(editTh);
+      headers.forEach(h => {
+        const th = document.createElement("th");
+        th.textContent = h;
+        th.addEventListener("click", () => handleSort(h));
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+
+      const filterRow = document.createElement("tr");
+      filterRow.appendChild(document.createElement("th"));
+      headers.forEach(h => {
+        const th = document.createElement("th");
+        const input = document.createElement("input");
+        input.className = "filter-input";
+        input.placeholder = "Filtrer...";
+        input.value = filters[h];
+        input.addEventListener("input", e => {
+          clearTimeout(filterTimers[h]);
+          filterTimers[h] = setTimeout(() => {
+            filters[h] = e.target.value;
+            renderTable();
+          }, 2000);
+        });
+        th.appendChild(input);
+        filterRow.appendChild(th);
+      });
+      thead.appendChild(filterRow);
+      table.appendChild(thead);
+
+      const groups = Object.entries(grouped).map(([qr, group]) => {
+        const primary = getClosestToToday(group);
+        return { qr, group, primary };
+      });
+
+      if (currentSort.column) {
+        const col = currentSort.column;
+        groups.sort((a, b) => {
+          const valA = a.primary.row[col] || "";
+          const valB = b.primary.row[col] || "";
+          return currentSort.ascending
+            ? valA.localeCompare(valB)
+            : valB.localeCompare(valA);
+        });
+      }
+
+      groups.forEach(({ qr, group, primary }) => {
+        const primaryRow = createRow(primary.row, true, qr);
+        if (!matchesFilters(primary.row)) return;
+        tbody.appendChild(primaryRow);
+        group.forEach(({ row }) => {
+          if (row !== primary.row) {
+            const tr = createRow(row, false, qr);
+            tr.classList.add("hidden", "group-" + qr);
+            tbody.appendChild(tr);
+          }
+        });
+      });
+
+      container.innerHTML = "";
+      table.appendChild(tbody);
+      container.appendChild(table);
+    }
+
+    function handleSort(col) {
+      if (currentSort.column === col) {
+        currentSort.ascending = !currentSort.ascending;
+      } else {
+        currentSort.column = col;
+        currentSort.ascending = true;
+      }
+      renderTable();
+    }
+
+    function createRow(rowData, isPrimary, qrKey) {
+      const tr = document.createElement("tr");
+      if (isPrimary) {
+        tr.classList.add("expandable");
+        tr.addEventListener("click", (e) => {
+          if (e.target.closest(".edit-btn")) return;
+          const rows = document.querySelectorAll(`.group-${qrKey}`);
+          const show = Array.from(rows).some(r => r.classList.contains("hidden"));
+          rows.forEach(r => r.classList.toggle("hidden", !show));
+        });
+      }
+
+      const editTd = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.className = "edit-btn";
+      btn.textContent = "✏️";
+      let editing = false;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editing = !editing;
+        btn.textContent = editing ? "🔒" : "✏️";
+        tr.querySelectorAll("td.data-cell").forEach(td => {
+          td.contentEditable = editing;
+          td.classList.toggle("readonly", !editing);
+        });
+      });
+      editTd.appendChild(btn);
+      tr.appendChild(editTd);
+
+      headers.forEach(h => {
+        const td = document.createElement("td");
+        td.className = "data-cell readonly";
+        td.textContent = rowData[h];
+        td.contentEditable = false;
+        td.addEventListener("input", () => rowData[h] = td.textContent);
+        td.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          targetCell = td;
+          const picker = document.getElementById("colorPicker");
+          picker.style.left = e.pageX + "px";
+          picker.style.top = e.pageY + "px";
+          picker.style.display = "block";
+        });
+        tr.appendChild(td);
+      });
+
+      return tr;
+    }
+
+    function downloadCSV() {
+      const csv = [headers.join(",")];
+      allData.forEach(row => {
+        const line = headers.map(h => `"${(row[h] || "").replace(/"/g, '""')}"`).join(",");
+        csv.push(line);
+      });
+      const blob = new Blob([csv.join("\\n")], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "qrkoder_redigert.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>
